@@ -5,12 +5,16 @@ require('dotenv').config()
 import AWS from 'aws-sdk'
 import { Spinner } from 'cli-spinner'
 import _ from 'lodash'
+import throat from 'throat'
 
 import { describeTableType } from './types'
 import { client } from './elasticsearch'
 
 Spinner.setDefaultSpinnerString('Loading')
 const loader = new Spinner()
+
+const es = client()
+let globalIndex = 0
 
 /**
  * Build params object for dynamoDB
@@ -109,13 +113,17 @@ export const scanTable = () => {
 export const pushToElastic = (datas: Array) => {
   return new Promise((resolve, reject) => {
     if (!datas) return reject('missing data')
-    const chunck = _.chunk(datas, Math.ceil(datas.length / 600))
+    const chunck = _.chunk(datas, 4)
 
     const preparedData = _.map(chunck, buildDataForES)
 
-    const pushedPromise = _.each(preparedData, processIndexES)
-
-    Promise.all(pushedPromise)
+    Promise.all(
+      preparedData.map(
+        throat(1, async el => {
+          return await processIndexES(el)
+        }),
+      ),
+    )
       .then(es => {
         return resolve('done')
       })
@@ -131,8 +139,6 @@ export const pushToElastic = (datas: Array) => {
  * @param {Array} data 
  */
 export const processIndexES = data => {
-  const es = client()
-
   return es.bulk({
     body: data,
   })
@@ -144,18 +150,17 @@ export const processIndexES = data => {
  */
 export const buildDataForES = datas => {
   const data = []
-  let index = 0
 
   _.each(datas, el => {
     data.push({
       index: {
         _index: process.env.ES_INDEX,
         _type: process.env.ES_TYPE,
-        _id: index,
+        _id: globalIndex,
       },
     })
     data.push(el)
-    index++
+    globalIndex++
   })
 
   return data
